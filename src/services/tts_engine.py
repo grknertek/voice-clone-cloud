@@ -40,7 +40,7 @@ class TTSEngine:
         self._load_model()
 
     def _load_model(self):
-        HF_TOKEN = "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" # Tokenini buraya yaz
+        HF_TOKEN = os.getenv("HF_TOKEN") or st.secrets.get("HF_TOKEN")
 
         try:
             if HF_TOKEN and "hf_" in HF_TOKEN:
