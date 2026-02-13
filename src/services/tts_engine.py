@@ -1,80 +1,42 @@
 import torch
-import torchaudio
-import io
-import sys
-import os
-import streamlit as st
-import huggingface_hub
-import transformers
-
-# --- PERTH BYPASS ---
-try:
-    import perth
-    class MockWatermarker:
-        def __init__(self, *args, **kwargs): pass
-        def apply_watermark(self, audio, *args, **kwargs): return audio
-    perth.PerthImplicitWatermarker = MockWatermarker
-except Exception:
-    from types import ModuleType
-    m = ModuleType('perth')
-    m.PerthImplicitWatermarker = type('W', (), {'__init__': lambda s, *a, **k: None, 'apply_watermark': lambda s, a, *x, **y: a})
-    sys.modules['perth'] = m
-
-# --- TRANSFORMERS PATCH ---
-original_config_init = transformers.PretrainedConfig.__init__
-def patched_config_init(self, *args, **kwargs):
-    kwargs['output_attentions'] = False
-    original_config_init(self, *args, **kwargs)
-transformers.PretrainedConfig.__init__ = patched_config_init
+import numpy as np
+from chatterbox import Chatterbox
+from src.utils.text_parser import split_text_by_language
 
 class TTSEngine:
-    _instance = None
-
-    @classmethod
-    def get_instance(cls):
-        if cls._instance is None: cls._instance = cls()
-        return cls._instance
-
     def __init__(self):
+        # GPU kontrolü
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self._load_model()
+        
+        # Modeli yükle (Hız için FP16 ve GPU optimizasyonu eklendi)
+        self.model = Chatterbox.from_pretrained(
+            "resemble-ai/chatterbox",
+            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+            device_map=self.device
+        )
+        print(f"🚀 AI Motoru {self.device} üzerinde başarıyla başlatıldı.")
 
-    def _load_model(self):
-        HF_TOKEN = os.getenv("HF_TOKEN") # Tokenini buraya yaz
-
-        try:
-            if HF_TOKEN and "hf_" in HF_TOKEN:
-                huggingface_hub.login(token=HF_TOKEN)
+    def generate(self, text, reference_audio_path):
+        """
+        Gelen metni dillerine ayırır ve klonlanmış ses üretir.
+        """
+        # 1. Metni dillerine göre parçala (text_parser'daki fonksiyonu kullanır)
+        text_segments = split_text_by_language(text)
+        
+        combined_audio = []
+        
+        # 2. Her segmenti işle
+        for segment, lang in text_segments:
+            # Chatterbox tahmini (inference)
+            # lang: 'tr' veya 'en' olarak text_parser'dan gelir
+            audio_segment = self.model.predict(
+                text=segment,
+                reference_audio=reference_audio_path,
+                language=lang
+            )
+            combined_audio.append(audio_segment)
             
-            from chatterbox.tts import ChatterboxTTS
-            
-            orig_load = torch.load
-            def smart_load(*args, **kwargs):
-                kwargs['map_location'] = torch.device(self.device)
-                if 'weights_only' in kwargs: kwargs['weights_only'] = False
-                return orig_load(*args, **kwargs)
-            
-            torch.load = smart_load
-            self._model = ChatterboxTTS.from_pretrained(device=self.device)
-            torch.load = orig_load
-            st.success("✅ AI Motoru Hazır")
-            
-        except Exception as e:
-            st.error(f"❌ Yükleme Hatası: {e}")
-            raise e
-
-    def generate_audio(self, text, lang, ref_path):
-        if not text.strip() or self._model is None: return None
-        try:
-            with torch.no_grad():
-                audio = self._model.generate(text=text, audio_prompt_path=ref_path)
-            
-            if audio is None: return None
-            
-            # --- KRİTİK DEĞİŞİKLİK ---
-            # Dosya (WAV) dönmüyoruz, saf numpy dizisi dönüyoruz
-            return audio.cpu().squeeze().numpy()
-            
-        except Exception as e:
-            st.warning(f"⚠️ Hata: {e}")
-            return None
+        # 3. Tüm parçaları uç uca ekle
+        if len(combined_audio) > 1:
+            return np.concatenate(combined_audio)
+        return combined_audio[0]
