@@ -1,12 +1,8 @@
-streamlit>=1.30.0
-python-docx
-numpy==1.26.4
+streamlit
 soundfile
-huggingface_hub
 transformers
+huggingface_hub
 accelerate
 peft
-omegaconf
-einops
-safetensors
-librosa
+python-docx
+numpy==1.26.4

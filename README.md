@@ -13,6 +13,7 @@ Gated Model Erişimi: Hugging Face üzerinden kimlik doğrulama katmanı ile gü
 Dinamik Dil Tespiti: Metin içindeki Türkçe ve İngilizce cümleleri otomatik ayırt ederek uygun model ağırlıklarıyla işleme.
 
 📂 Dosya Yapısı
+Plaintext
 VOICECLONEPROJECT/
 ├── _vendor/                # Chatterbox kaynak kodları
 ├── src/
@@ -33,6 +34,10 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 2. Model Erişimi
+
+Uygulama ResembleAI modelini kullanır. Lütfen:
+
+Hugging Face sayfasından erişim izni alın.
 
 src/services/tts_engine.py içindeki HF_TOKEN değişkenine kendi Access Token'ınızı yapıştırın.
 
