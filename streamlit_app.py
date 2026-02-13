@@ -1,85 +1,111 @@
 import streamlit as st
-import sys
 import os
-import tempfile
-import zipfile
+import shutil
 import io
 import numpy as np
+import zipfile
+from datetime import datetime
 import soundfile as sf
+from src.services.tts_engine import TTSEngine
+from src.utils.text_parser import parse_docx
 
-# Path Ayarları
-base_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(os.path.join(base_dir, 'src'))
-vendor_path = os.path.join(base_dir, '_vendor', 'src')
-if os.path.exists(vendor_path): sys.path.append(vendor_path)
+# Sayfa Yapılandırması
+st.set_page_config(page_title="Voice Clone Cloud Edition", page_icon="☁️")
+st.title("☁️ Voice Clone Cloud Edition")
 
-from services.tts_engine import TTSEngine
-from utils.audio_utils import repair_audio
-from utils.text_parser import parse_docx, split_text_by_language
+# Google Drive Ayarları
+DRIVE_BASE_PATH = "/content/drive/MyDrive/VoiceClone_Outputs"
 
-st.set_page_config(page_title="Voice Clone Cloud", layout="wide")
+# AI Motorunu Başlat (Önbelleğe alarak hızı artırıyoruz)
+@st.cache_resource
+def load_engine():
+    try:
+        return TTSEngine()
+    except Exception as e:
+        st.error(f"AI Motoru yüklenirken hata oluştu: {e}")
+        return None
 
-def main():
-    st.title("☁️ Voice Clone Cloud Edition")
+engine = load_engine()
+
+if engine:
+    st.success("✅ AI Motoru Hazır (GPU Aktif)")
+
+# --- ARAYÜZ ---
+st.header("1. Giriş Dosyalarını Yükle")
+col1, col2 = st.columns(2)
+
+with col1:
+    ref_audio = st.file_uploader("Referans Ses (WAV/MP3)", type=["wav", "mp3"])
+with col2:
+    docx_file = st.file_uploader("Senaryo Dosyası (DOCX)", type=["docx"])
+
+if ref_audio and docx_file:
+    st.header("2. İşleme ve Seslendirme")
     
-    @st.cache_resource
-    def get_engine(): return TTSEngine.get_instance()
-    
-    engine = get_engine()
-
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    with col1:
-        ref_audio = st.file_uploader("Referans Ses (WAV)", type=["wav"])
-    with col2:
-        scripts = st.file_uploader("Senaryolar (DOCX)", type=["docx"], accept_multiple_files=True)
-
-    if st.button("🎙️ Klonlamayı Başlat", type="primary", use_container_width=True):
-        if not ref_audio or not scripts:
-            st.warning("Dosyaları yükleyin!"); return
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp.write(ref_audio.getbuffer())
-            raw_path = tmp.name
-        fixed_path = raw_path.replace(".wav", "_fix.wav")
-
+    if st.button("🎙️ Klonlamayı Başlat ve Drive'a Kaydet"):
         try:
-            if repair_audio(raw_path, fixed_path):
-                zip_buffer = io.BytesIO()
-                files_created = 0
+            # Geçici dosyaları hazırla
+            with open("temp_ref.wav", "wb") as f:
+                f.write(ref_audio.getbuffer())
+            
+            # Senaryoyu parçala
+            slides = parse_docx(docx_file)
+            st.info(f"Toplam {len(slides)} slayt tespit edildi. İşleniyor...")
+            
+            output_files = []
+            progress_bar = st.progress(0)
+            
+            # Sentezleme Döngüsü
+            for i, (slide_title, slide_text) in enumerate(slides.items()):
+                st.write(f"⏳ İşleniyor: {slide_title}")
                 
-                with zipfile.ZipFile(zip_buffer, "w") as zf:
-                    for script_file in scripts:
-                        sections = parse_docx(script_file)
-                        for title, content in sections:
-                            st.write(f"⏳ İşleniyor: {title}")
-                            segments = split_text_by_language(content)
-                            
-                            # --- SES BİRLEŞTİRME MANTIĞI ---
-                            combined_samples = []
-                            for txt, lang in segments:
-                                st.caption(f"  🎙️ Okunuyor: {txt[:40]}...")
-                                sample_array = engine.generate_audio(txt, lang, fixed_path)
-                                if sample_array is not None:
-                                    combined_samples.append(sample_array)
-                            
-                            if combined_samples:
-                                # Tüm numpy dizilerini uç uca ekle
-                                final_audio_array = np.concatenate(combined_samples)
-                                
-                                # Tek bir WAV dosyası olarak belleğe yaz
-                                wav_io = io.BytesIO()
-                                sf.write(wav_io, final_audio_array, 22050, format='WAV')
-                                
-                                filename = f"{os.path.splitext(script_file.name)[0]}_{title}.wav"
-                                zf.writestr(filename, wav_io.getvalue())
-                                files_created += 1
+                # AI Sentezleme
+                audio_data = engine.generate(slide_text, "temp_ref.wav")
                 
-                if files_created > 0:
-                    st.success("✅ Tüm cümleler birleştirildi!")
-                    st.download_button("📥 ZIP İNDİR", zip_buffer.getvalue(), "voice_clones.zip")
-        finally:
-            if os.path.exists(raw_path): os.unlink(raw_path)
-            if os.path.exists(fixed_path): os.unlink(fixed_path)
+                # Geçici dosya olarak kaydet
+                filename = f"{slide_title.replace(' ', '_')}.wav"
+                sf.write(filename, audio_data, 22050)
+                output_files.append((filename, audio_data))
+                
+                # Progress güncelle
+                progress_bar.progress((i + 1) / len(slides))
+            
+            # --- ZIP OLUŞTURMA ---
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w") as zf:
+                for filename, _ in output_files:
+                    zf.write(filename)
+            
+            with open("output_slaytlar.zip", "wb") as f:
+                f.write(zip_buffer.getvalue())
 
-if __name__ == "__main__": main()
+            st.success("✅ Tüm slaytlar başarıyla seslendirildi!")
+
+            # --- GOOGLE DRIVE ENTEGRASYONU ---
+            if os.path.exists("/content/drive/MyDrive"):
+                if not os.path.exists(DRIVE_BASE_PATH):
+                    os.makedirs(DRIVE_BASE_PATH)
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                drive_filename = f"ses_slaytlari_{timestamp}.zip"
+                drive_full_path = os.path.join(DRIVE_BASE_PATH, drive_filename)
+                
+                shutil.copy("output_slaytlar.zip", drive_full_path)
+                st.balloons()
+                st.info(f"🚀 Drive Senkronizasyonu Başarılı! Dosya şuraya kaydedildi: \n`MyDrive/VoiceClone_Outputs/{drive_filename}`")
+            else:
+                st.warning("⚠️ Drive bağlı değil, dosya sadece yerel indirilebilir.")
+
+            # İndirme Butonu
+            st.download_button(
+                label="📥 ZIP Dosyasını Bilgisayara İndir",
+                data=zip_buffer.getvalue(),
+                file_name="output_slaytlar.zip",
+                mime="application/zip"
+            )
+
+        except Exception as e:
+            st.error(f"Bir hata oluştu: {e}")
+
+else:
+    st.info("Lütfen devam etmek için referans ses ve senaryo dosyasını yükleyin.")
